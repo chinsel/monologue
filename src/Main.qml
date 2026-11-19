@@ -126,7 +126,7 @@ ApplicationWindow {
     readonly property bool controlFocused: activeFocusItem && (activeFocusItem instanceof AbstractButton || activeFocusItem instanceof ComboBox || activeFocusItem instanceof Slider || activeFocusItem instanceof TextInput)
     Shortcut {
         sequence: "Space"; context: Qt.WindowShortcut; autoRepeat: false
-        enabled: !win.overlayOpen && !cameraChoice.popup.visible && !microphoneChoice.popup.visible && !win.controlFocused && !win.busy
+        enabled: !win.overlayOpen && !cameraChoice.popup.visible && !microphoneChoice.popup.visible && !exposurePopup.visible && !win.controlFocused && !win.busy
         onActivated: win.space()
     }
     // Stopping ends the take and opens it for editing.
@@ -135,7 +135,7 @@ ApplicationWindow {
     Shortcut { sequence: "Ctrl+S"; context: Qt.WindowShortcut; autoRepeat: false; enabled: win.finished && !win.busy && !win.overlayOpen; onActivated: { player.pause(); backend.save() } }
     Shortcut {
         sequence: "Escape"; context: Qt.WindowShortcut; autoRepeat: false
-        enabled: (backend.takeActive || win.finished) && !win.busy && !win.overlayOpen && !cameraChoice.popup.visible && !microphoneChoice.popup.visible
+        enabled: (backend.takeActive || win.finished) && !win.busy && !win.overlayOpen && !cameraChoice.popup.visible && !microphoneChoice.popup.visible && !exposurePopup.visible
         onActivated: { player.pause(); restartDialog.open() }
     }
     // Editing the finished clip.
@@ -178,6 +178,7 @@ ApplicationWindow {
         microphone: "M12 3a3 3 0 0 1 3 3v5a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3z M5.5 11a6.5 6.5 0 0 0 13 0 M12 17.5V21",
         chevron: "M6 9l6 6 6-6",
         mirror: "M3 7l5 5-5 5z M21 7l-5 5 5 5z M12 20v2 M12 14v2 M12 8v2 M12 2v2",
+        brightness: "M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10z M12 1v2 M12 21v2 M4.22 4.22l1.42 1.42 M18.36 18.36l1.42 1.42 M1 12h2 M21 12h2 M4.22 19.78l1.42-1.42 M18.36 5.64l1.42-1.42",
         back: "M4 12a8 8 0 1 0 2.4-5.7 M4 4v4.5h4.5",
         play: "M8 4.5v15l12.5-7.5z",
         pause: "M7 4.5h2a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1v-13a1 1 0 0 1 1-1z M15 4.5h2a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1v-13a1 1 0 0 1 1-1z"
@@ -555,6 +556,99 @@ ApplicationWindow {
                     }
                     onClicked: { backend.setMirror(!backend.mirror); liveVideo.forceActiveFocus() }
                     HoverHandler { cursorShape: Qt.PointingHandCursor }
+                }
+                RoundButton {
+                    id: exposureButton; objectName: "exposureButton"
+                    visible: !win.finished && backend.exposureSupported
+                    implicitWidth: 36; implicitHeight: 36; padding: 0; flat: true
+                    focusPolicy: Qt.TabFocus; hoverEnabled: true
+                    Accessible.name: qsTr("Exposure and brightness")
+                    Layout.rightMargin: -2
+                    ToolTip {
+                        objectName: "exposureTip"; visible: exposureButton.hovered && !exposurePopup.visible
+                        text: qsTr("Exposure & brightness")
+                    }
+                    background: Rectangle {
+                        radius: width / 2; color: (exposureButton.hovered || exposurePopup.visible) ? win.roundHoverColor : "transparent"
+                        border.width: exposureButton.activeFocus ? 2 : 0; border.color: win.accent
+                    }
+                    contentItem: Item {
+                        Icon {
+                            anchors.centerIn: parent; width: 20; height: 20; path: win.icons.brightness
+                            color: (exposureButton.hovered || exposurePopup.visible) ? win.strongColor : !backend.autoExposure ? win.accent : win.dimColor
+                        }
+                    }
+                    onClicked: {
+                        if (exposurePopup.visible) exposurePopup.close()
+                        else exposurePopup.open()
+                    }
+                    HoverHandler { cursorShape: Qt.PointingHandCursor }
+                    Popup {
+                        id: exposurePopup; objectName: "exposurePopup"
+                        x: win.rightToLeft ? 0 : (parent.width - width)
+                        y: -height - 8
+                        width: 250
+                        padding: 16
+                        modal: false
+                        focus: true
+                        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+                        background: Rectangle {
+                            color: win.surfaceColor
+                            radius: win.cornerRadius
+                            border.color: win.borderColor
+                            border.width: 1
+                        }
+                        contentItem: ColumnLayout {
+                            spacing: 12
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Label {
+                                    Layout.fillWidth: true
+                                    text: qsTr("Auto exposure")
+                                    font.pixelSize: 13
+                                    font.weight: Font.DemiBold
+                                    color: win.textColor
+                                }
+                                Switch {
+                                    id: autoExposureSwitch; objectName: "autoExposureSwitch"
+                                    checked: backend.autoExposure
+                                    Material.accent: win.accent
+                                    onToggled: backend.setAutoExposure(checked)
+                                    Accessible.name: qsTr("Auto exposure")
+                                }
+                            }
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 4
+                                opacity: backend.autoExposure ? 0.4 : 1.0
+                                enabled: !backend.autoExposure
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Label {
+                                        Layout.fillWidth: true
+                                        text: qsTr("Brightness")
+                                        font.pixelSize: 12
+                                        color: win.dimColor
+                                    }
+                                    Label {
+                                        text: backend.exposureBrightness + "%"
+                                        font.pixelSize: 12
+                                        font.family: "monospace"
+                                        color: win.dimColor
+                                    }
+                                }
+                                Slider {
+                                    id: brightnessSlider; objectName: "brightnessSlider"
+                                    Layout.fillWidth: true
+                                    from: 0; to: 100; stepSize: 1
+                                    value: backend.exposureBrightness
+                                    Material.accent: win.accent
+                                    onMoved: backend.setExposureBrightness(Math.round(value))
+                                    Accessible.name: qsTr("Brightness")
+                                }
+                            }
+                        }
+                    }
                 }
                 ActionButton {
                     objectName: "saveButton"

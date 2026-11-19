@@ -640,6 +640,34 @@ private slots:
             QVERIFY2(std::abs(flashes[i]-clicks[i])<.01,qPrintable(QString("Event %1: video %2, audio %3").arg(i).arg(flashes[i]).arg(clicks[i])));
         }
     }
+    void exposureProperties() {
+        Backend backend(new FakePicker, false);
+        QCOMPARE(backend.autoExposure(), true);
+        QCOMPARE(backend.exposureBrightness(), 65);
+        QCOMPARE(backend.exposureSupported(), false);
+
+        QSignalSpy spy(&backend, &Backend::exposureChanged);
+        backend.setAutoExposure(false);
+        QCOMPARE(backend.autoExposure(), false);
+        QCOMPARE(spy.count(), 1);
+
+        backend.setExposureBrightness(80);
+        QCOMPARE(backend.exposureBrightness(), 80);
+        QCOMPARE(spy.count(), 2);
+
+        backend.setExposureBrightness(150);
+        QCOMPARE(backend.exposureBrightness(), 100);
+
+        backend.setExposureBrightness(-10);
+        QCOMPARE(backend.exposureBrightness(), 0);
+
+        QSettings settings;
+        QCOMPARE(settings.value("exposure/auto").toBool(), false);
+        QCOMPARE(settings.value("exposure/brightness").toInt(), 0);
+
+        backend.setAutoExposure(true);
+        backend.setExposureBrightness(65);
+    }
 };
 int main(int argc,char**argv) {
     media::useFfmpeg();

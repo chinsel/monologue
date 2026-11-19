@@ -255,6 +255,7 @@ static QMediaFormat recordingFormat(bool audio) {
     return f;
 }
 bool Writer::supported(bool audio) { return recordingFormat(audio).isSupported(QMediaFormat::Encode); }
+bool Writer::startingEncoder() const { return !m_encoderStartup.hasExpired(5000); }
 bool Writer::start(const QString &path, const QVideoFrameFormat &format,
                    double fps, const QAudioFormat &audioFormat, qint64 now) {
     m_clock.start(now);
@@ -274,9 +275,10 @@ bool Writer::start(const QString &path, const QVideoFrameFormat &format,
     m_recorder.setMediaFormat(recordingFormat(audioFormat.isValid()));
     m_recorder.setVideoResolution(format.frameSize());
     m_recorder.setVideoFrameRate(fps);
-    m_recorder.setQuality(QMediaRecorder::VeryHighQuality);
+    m_recorder.setQuality(QMediaRecorder::HighQuality);
     m_recorder.setAudioBitRate(192000);
     m_recorder.setOutputLocation(QUrl::fromLocalFile(path));
+    m_encoderStartup.start();
     m_recorder.record();
     return !m_failed;
 }
@@ -314,8 +316,13 @@ void Writer::videoAt(QVideoFrame frame, qint64 position, bool fromCamera) {
     frame.setEndTime(qRound64((frameIndex + 1) * 1000000.0 / m_fps));
     frame.setStreamFrameRate(m_fps);
     m_lastVideo = timestamp;
-    // Bounded native-frame references; never build an unbounded 4K frame queue.
-    if (m_frames.size() >= 6) { fail(tr("Video encoding cannot keep up at this camera's maximum resolution, so the take was stopped.")); return; }
+    // Opening the encoder can take time before it begins consuming frames.
+    // Keep a bounded queue (6 seconds during startup, 4 seconds in steady state)
+    // to absorb any temporary OS scheduling or CPU throttling spikes.
+    const int limit = startingEncoder() ? 180 : 120;
+    if (m_frames.size() >= limit) {
+        fail(tr("Video encoding cannot keep up at this camera's maximum resolution, so the take was stopped.")); return;
+    }
     m_frames.enqueue(frame);
     drain();
 }
@@ -358,14 +365,18 @@ void Writer::appendAudio(const QByteArray &data) {
     QAudioBuffer buffer(data, m_audioFormat, m_audioFormat.durationForFrames(m_audioFramesWritten));
     m_audioFramesWritten += buffer.frameCount();
     m_queuedAudioUs += buffer.duration();
-    if (m_queuedAudioUs > 500000) { fail(tr("Audio encoding cannot keep up, so the take was stopped.")); return; }
+    const qint64 limit = startingEncoder() ? 6000000 : 4000000;
+    if (m_queuedAudioUs > limit) { fail(tr("Audio encoding cannot keep up, so the take was stopped.")); return; }
     m_buffers.enqueue(buffer);
     drain();
 }
 void Writer::drain() {
     if (m_draining || m_failed) return;
     m_draining = true;
-    while (!m_frames.isEmpty() && m_video->sendVideoFrame(m_frames.head())) m_frames.dequeue();
+    while (!m_frames.isEmpty()) {
+        if (!m_video->sendVideoFrame(m_frames.head())) break;
+        m_frames.dequeue();
+    }
     while (!m_buffers.isEmpty() && m_audio->sendAudioBuffer(m_buffers.head())) {
         m_queuedAudioUs -= m_buffers.head().duration(); m_buffers.dequeue();
     }

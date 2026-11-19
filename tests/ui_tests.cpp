@@ -40,6 +40,9 @@ QtObject {
     property bool clipping: false
     property string meterText: "−9 dBFS"
     property bool mirror: true
+    property bool autoExposure: true
+    property int exposureBrightness: 65
+    property bool exposureSupported: true
     property url clip: ""
     property string clipName: "Monologue-2026-09-17.mp4"
     property real saveProgress: 0
@@ -65,6 +68,8 @@ QtObject {
     function toggleRecording() { toggles++; state = state === "ready" || state === "paused" ? "recording" : "paused"; changed() }
     function finish() { state = "finished"; changed() }
     function setMirror(value) { mirror = value; changed() }
+    function setAutoExposure(value) { autoExposure = value; changed() }
+    function setExposureBrightness(value) { exposureBrightness = value; changed() }
     function selectCamera(i) {}
     function selectMicrophone(i) {}
     function newRecording() { newRecordings++; state = "ready"; changed() }
@@ -127,6 +132,18 @@ QtObject {
         QVERIFY(!backend->property("mirror").toBool()); QVERIFY(!live->property("mirrored").toBool());
         QTRY_VERIFY(live->hasActiveFocus());
         QTest::keyClick(window,Qt::Key_M); QVERIFY(backend->property("mirror").toBool()); QVERIFY(live->property("mirrored").toBool());
+        auto *exposure=window->findChild<QQuickItem*>("exposureButton"); QVERIFY(exposure);
+        QVERIFY(exposure->isVisible());
+        auto *popup=window->findChild<QObject*>("exposurePopup"); QVERIFY(popup);
+        QVERIFY(!popup->property("visible").toBool());
+        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,exposure->mapToScene(QPointF(exposure->width()/2,exposure->height()/2)).toPoint());
+        QTRY_VERIFY(popup->property("visible").toBool());
+        auto *autoSwitch=window->findChild<QQuickItem*>("autoExposureSwitch"); QVERIFY(autoSwitch);
+        auto *slider=window->findChild<QQuickItem*>("brightnessSlider"); QVERIFY(slider);
+        QCOMPARE(autoSwitch->property("checked").toBool(),true);
+        QCOMPARE(slider->property("value").toInt(),65);
+        QTest::keyClick(window,Qt::Key_Escape);
+        QTRY_VERIFY(!popup->property("visible").toBool());
         QTest::keyClick(window,Qt::Key_Space); QCOMPARE(backend->property("state").toString(),QString("recording"));
         QTest::keyClick(window,Qt::Key_Space); QCOMPARE(backend->property("state").toString(),QString("paused"));
         QTest::keyClick(window,Qt::Key_Space); QCOMPARE(backend->property("state").toString(),QString("recording"));

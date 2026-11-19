@@ -13,6 +13,10 @@
 #include <cmath>
 #include <cstdio>
 #include <algorithm>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/ioctl.h>
+#include <linux/videodev2.h>
 
 static QString deviceId(const QByteArray &id) { return QString::fromLatin1(id.toBase64()); }
 static int indexOf(const QVariantList &list, const QString &id) {
@@ -29,6 +33,8 @@ Backend::Backend(FilePicker *picker, bool activateHardware, QObject *parent)
     m_audioId=m_settings.value("microphone/id").toString();
     // Mirrored like Zoom and FaceTime unless turned off; only the preview flips.
     m_mirror=m_settings.value("camera/mirror",true).toBool();
+    m_autoExposure=m_settings.value("exposure/auto",true).toBool();
+    m_exposureBrightness=m_settings.value("exposure/brightness",65).toInt();
     m_capture.setVideoSink(&m_sink);
     connect(&m_sink,&QVideoSink::videoFrameChanged,this,&Backend::receiveVideo);
     if(m_activateHardware) {
@@ -197,7 +203,29 @@ void Backend::receiveVideo(QVideoFrame frame) {
         m_cameraHealthy=true;
         m_settings.setValue("camera/id",m_cameraId);
         m_settings.setValue("camera/label",m_camera->cameraDevice().description());
+        updateExposureSupport();
+        if (m_exposureSupported) {
+            if (!m_autoExposure) {
+                applyExposureBrightness();
+            } else {
+                const int initialHw = std::clamp(qRound(m_exposureBrightness * 255.0 / 100.0), 0, 255);
+                const QString dev = cameraDevicePath();
+                if (!dev.isEmpty()) {
+                    const int fd = ::open(dev.toUtf8().constData(), O_RDWR | O_NONBLOCK | O_CLOEXEC);
+                    if (fd >= 0) {
+                        struct v4l2_control ctrl{};
+                        ctrl.id = V4L2_CID_BRIGHTNESS;
+                        ctrl.value = initialHw;
+                        if (::ioctl(fd, VIDIOC_S_CTRL, &ctrl) == 0) m_currentHardwareBrightness = initialHw;
+                        ::close(fd);
+                    }
+                }
+            }
+        }
         updateReady();
+    }
+    if (m_autoExposure && m_exposureSupported && m_state != "saving" && m_state != "finalizing") {
+        processAutoExposure(frame);
     }
     qint64 captureTime=m_lastVideoAt;
     if(frame.startTime()>=0) {
@@ -263,6 +291,182 @@ void Backend::setMirror(bool value) {
     m_mirror = value;
     m_settings.setValue("camera/mirror", value);
     emit mirrorChanged();
+}
+void Backend::setAutoExposure(bool value) {
+    if (m_autoExposure == value) return;
+    m_autoExposure = value;
+    m_settings.setValue("exposure/auto", value);
+    if (!m_autoExposure) {
+        applyExposureBrightness();
+    }
+    emit exposureChanged();
+}
+void Backend::setExposureBrightness(int value) {
+    value = std::clamp(value, 0, 100);
+    if (m_exposureBrightness == value) return;
+    m_exposureBrightness = value;
+    m_settings.setValue("exposure/brightness", value);
+    if (!m_autoExposure) {
+        applyExposureBrightness();
+    }
+    emit exposureChanged();
+}
+QString Backend::cameraDevicePath() const {
+    if (m_camera) {
+        const QString path = QString::fromUtf8(m_camera->cameraDevice().id());
+        if (path.startsWith("/dev/video")) return path;
+    }
+    for (const auto &d : QMediaDevices::videoInputs()) {
+        if (deviceId(d.id()) == m_cameraId) {
+            const QString path = QString::fromUtf8(d.id());
+            if (path.startsWith("/dev/video")) return path;
+        }
+    }
+    if (QFile::exists("/dev/video0")) return "/dev/video0";
+    return QString();
+}
+void Backend::updateExposureSupport() {
+    const QString dev = cameraDevicePath();
+    bool supported = false;
+    int currentVal = 128;
+    if (!dev.isEmpty()) {
+        const int fd = ::open(dev.toUtf8().constData(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+        if (fd >= 0) {
+            struct v4l2_queryctrl queryctrl{};
+            queryctrl.id = V4L2_CID_BRIGHTNESS;
+            if (::ioctl(fd, VIDIOC_QUERYCTRL, &queryctrl) == 0 &&
+                !(queryctrl.flags & V4L2_CTRL_FLAG_DISABLED)) {
+                supported = true;
+                struct v4l2_control ctrl{};
+                ctrl.id = V4L2_CID_BRIGHTNESS;
+                if (::ioctl(fd, VIDIOC_G_CTRL, &ctrl) == 0) {
+                    currentVal = ctrl.value;
+                }
+            }
+            ::close(fd);
+        }
+    }
+    if (m_exposureSupported != supported) {
+        m_exposureSupported = supported;
+        emit exposureChanged();
+    }
+    if (supported) {
+        m_currentHardwareBrightness = currentVal;
+    }
+}
+void Backend::applyExposureBrightness() {
+    if (!m_exposureSupported) return;
+    const QString dev = cameraDevicePath();
+    if (dev.isEmpty()) return;
+    const int target = std::clamp(qRound(m_exposureBrightness * 255.0 / 100.0), 0, 255);
+    const int fd = ::open(dev.toUtf8().constData(), O_RDWR | O_NONBLOCK | O_CLOEXEC);
+    if (fd >= 0) {
+        struct v4l2_control ctrl{};
+        ctrl.id = V4L2_CID_BRIGHTNESS;
+        ctrl.value = target;
+        if (::ioctl(fd, VIDIOC_S_CTRL, &ctrl) == 0) {
+            m_currentHardwareBrightness = target;
+        }
+        ::close(fd);
+    }
+}
+void Backend::processAutoExposure(QVideoFrame &frame) {
+    if (!m_autoExposure || !m_exposureSupported) return;
+    const auto time = now();
+    if (time - m_lastAutoExposureAt < 200000) return;
+    m_lastAutoExposureAt = time;
+
+    QVideoFrame mapped(frame);
+    if (!mapped.map(QVideoFrame::ReadOnly)) return;
+
+    double totalLuma = 0;
+    int count = 0;
+    const int width = mapped.width();
+    const int height = mapped.height();
+    const int startX = width * 2 / 10;
+    const int endX = width * 8 / 10;
+    const int startY = height * 2 / 10;
+    const int endY = height * 8 / 10;
+    const auto pixelFormat = mapped.pixelFormat();
+
+    if (pixelFormat == QVideoFrameFormat::Format_YUYV) {
+        const uchar *bits = mapped.bits(0);
+        const int stride = mapped.bytesPerLine(0);
+        for (int y = startY; y < endY; y += 8) {
+            const uchar *row = bits + y * stride;
+            for (int x = startX; x < endX; x += 8) {
+                totalLuma += row[x * 2];
+                count++;
+            }
+        }
+    } else if (pixelFormat == QVideoFrameFormat::Format_UYVY) {
+        const uchar *bits = mapped.bits(0);
+        const int stride = mapped.bytesPerLine(0);
+        for (int y = startY; y < endY; y += 8) {
+            const uchar *row = bits + y * stride;
+            for (int x = startX; x < endX; x += 8) {
+                totalLuma += row[x * 2 + 1];
+                count++;
+            }
+        }
+    } else if (pixelFormat == QVideoFrameFormat::Format_NV12 || pixelFormat == QVideoFrameFormat::Format_YUV420P) {
+        const uchar *bits = mapped.bits(0);
+        const int stride = mapped.bytesPerLine(0);
+        for (int y = startY; y < endY; y += 8) {
+            const uchar *row = bits + y * stride;
+            for (int x = startX; x < endX; x += 8) {
+                totalLuma += row[x];
+                count++;
+            }
+        }
+    } else {
+        const QImage img = mapped.toImage();
+        if (!img.isNull()) {
+            for (int y = startY; y < endY; y += 8) {
+                for (int x = startX; x < endX; x += 8) {
+                    totalLuma += qGray(img.pixel(x, y));
+                    count++;
+                }
+            }
+        }
+    }
+    mapped.unmap();
+
+    if (count == 0) return;
+    const double avgLuma = totalLuma / count;
+
+    int step = 0;
+    if (avgLuma < 112.0) {
+        const double diff = 120.0 - avgLuma;
+        step = diff > 30.0 ? 4 : (diff > 15.0 ? 2 : 1);
+    } else if (avgLuma > 128.0) {
+        const double diff = avgLuma - 120.0;
+        step = diff > 30.0 ? -4 : (diff > 15.0 ? -2 : -1);
+    }
+
+    if (step != 0) {
+        const int nextHw = std::clamp(m_currentHardwareBrightness + step, 0, 255);
+        if (nextHw != m_currentHardwareBrightness) {
+            const QString dev = cameraDevicePath();
+            if (!dev.isEmpty()) {
+                const int fd = ::open(dev.toUtf8().constData(), O_RDWR | O_NONBLOCK | O_CLOEXEC);
+                if (fd >= 0) {
+                    struct v4l2_control ctrl{};
+                    ctrl.id = V4L2_CID_BRIGHTNESS;
+                    ctrl.value = nextHw;
+                    if (::ioctl(fd, VIDIOC_S_CTRL, &ctrl) == 0) {
+                        m_currentHardwareBrightness = nextHw;
+                        const int pct = std::clamp(qRound(nextHw * 100.0 / 255.0), 0, 100);
+                        if (pct != m_exposureBrightness) {
+                            m_exposureBrightness = pct;
+                            emit exposureChanged();
+                        }
+                    }
+                    ::close(fd);
+                }
+            }
+        }
+    }
 }
 void Backend::retry() { if(!m_writer && m_state!="finished") activateSources(); }
 void Backend::toggleRecording() {

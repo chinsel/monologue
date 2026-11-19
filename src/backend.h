@@ -30,6 +30,9 @@ class Backend : public QObject {
     Q_PROPERTY(int microphoneIndex READ microphoneIndex NOTIFY devicesChanged)
     Q_PROPERTY(bool ready READ ready NOTIFY changed)
     Q_PROPERTY(bool mirror READ mirror NOTIFY mirrorChanged)
+    Q_PROPERTY(bool autoExposure READ autoExposure WRITE setAutoExposure NOTIFY exposureChanged)
+    Q_PROPERTY(int exposureBrightness READ exposureBrightness WRITE setExposureBrightness NOTIFY exposureChanged)
+    Q_PROPERTY(bool exposureSupported READ exposureSupported NOTIFY exposureChanged)
     Q_PROPERTY(bool audioEnabled READ audioEnabled NOTIFY changed)
     Q_PROPERTY(bool takeActive READ takeActive NOTIFY changed)
     Q_PROPERTY(bool dialogOpen READ dialogOpen NOTIFY changed)
@@ -61,6 +64,9 @@ public:
     int microphoneIndex() const;
     bool ready() const;
     bool mirror() const { return m_mirror; }
+    bool autoExposure() const { return m_autoExposure; }
+    int exposureBrightness() const { return m_exposureBrightness; }
+    bool exposureSupported() const { return m_exposureSupported; }
     bool audioEnabled() const { return m_audioId != "none"; }
     bool takeActive() const { return m_writer != nullptr; }
     bool dialogOpen() const { return m_dialogOpen; }
@@ -83,6 +89,8 @@ public:
     Q_INVOKABLE void selectCamera(int index);
     Q_INVOKABLE void selectMicrophone(int index);
     Q_INVOKABLE void setMirror(bool value);
+    Q_INVOKABLE void setAutoExposure(bool value);
+    Q_INVOKABLE void setExposureBrightness(int value);
     Q_INVOKABLE void retry();
     Q_INVOKABLE void toggleRecording();
     Q_INVOKABLE void finish();
@@ -109,6 +117,7 @@ signals:
     void changed();
     void devicesChanged();
     void mirrorChanged();
+    void exposureChanged();
     void meterChanged();
     void editChanged();
     void safeToClose();
@@ -126,6 +135,10 @@ private:
     void receiveAudio(const QByteArray &data, qint64 capturedAt);
     void finishWhenCaptured();
     void receiveVideo(QVideoFrame frame);
+    QString cameraDevicePath() const;
+    void updateExposureSupport();
+    void applyExposureBrightness();
+    void processAutoExposure(QVideoFrame &frame);
     void tick();
     void sourceFailed(const QString &message);
     void startTake();
@@ -182,5 +195,10 @@ private:
     double m_duration = 0, m_level = -60, m_peak = -60, m_pendingPeak = 0, m_fps = 30;
     bool m_cameraHealthy = false, m_audioHealthy = false, m_dialogOpen = false;
     bool m_mirror = true;
+    bool m_autoExposure = true;
+    int m_exposureBrightness = 65;
+    bool m_exposureSupported = false;
+    int m_currentHardwareBrightness = 128;
+    qint64 m_lastAutoExposureAt = 0;
     bool m_hasSaved = false, m_discardAfter = false, m_restartAfter = false, m_probing = false;
 };

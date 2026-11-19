@@ -1,5 +1,7 @@
 # Monologue
 
+> **Fork note:** this build is tuned specifically for the 2017 MacBook Pro (FaceTime camera exposure handling and x264 fast path). For other hardware, use upstream [omacom/monologue](https://github.com/omacom/monologue).
+
 A simple webcam recorder for Omarchy. Choose your camera and microphone once, then press **Space** to record. Press again to pause or resume the same take. Stop the take and it opens right away in a built-in editor: trim either end, cut ranges out of the middle, then **Save**.
 
 - Remembers camera and microphone by device ID; missing inputs never silently switch.
